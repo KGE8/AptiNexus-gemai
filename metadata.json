@@ -1,0 +1,8 @@
+{
+  "name": "AptiNexus",
+  "description": "Connect abilities, discover career opportunities, and receive Gemini-powered dynamic career, course, and resume intelligence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
