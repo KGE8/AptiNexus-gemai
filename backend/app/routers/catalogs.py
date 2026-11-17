@@ -12,9 +12,21 @@ from app.services.gemini_service import (
     generate_skill_micro_quiz,
     grade_skill_micro_quiz,
 )
-from app.services.intelligence import career_gaps, dashboard_data, evidenced_skill_names, read_user_value, simulate_career_matches
+from app.services.intelligence import (
+    build_notifications,
+    career_gaps,
+    dashboard_data,
+    evidenced_skill_names,
+    read_user_value,
+    simulate_career_matches,
+)
 
 router = APIRouter(tags=["AptiNexus"])
+
+
+@router.get("/notifications")
+def notifications(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return build_notifications(db, user)
 
 
 @router.get("/analytics/dashboard")

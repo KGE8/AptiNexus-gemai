@@ -18,6 +18,8 @@ import {
   gradeSkillMicroQuiz,
 } from './server/gemini.ts'
 import {
+  allCareerMatches,
+  buildNotifications,
   buildSkillGraph,
   careerGaps,
   createAccessToken,
@@ -41,6 +43,23 @@ const PORT = Number(process.env.PORT || 3000)
 const IS_PROD = process.env.NODE_ENV === 'production'
 
 const app = express()
+app.use((req, res, next) => {
+  const origin = req.headers.origin
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Vary', 'Origin')
+    res.setHeader('Access-Control-Allow-Credentials', 'true')
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*')
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization,Content-Type,Accept')
+  if (req.method === 'OPTIONS') {
+    res.status(204).end()
+    return
+  }
+  next()
+})
 app.use(express.json({ limit: '2mb' }))
 
 const upload = multer({
@@ -168,6 +187,10 @@ api.put('/users/me/settings', requireAuth, (req: AuthedRequest, res) => {
   res.json(writeUserValue(req.user!.id, 'settings', body))
 })
 
+api.get('/notifications', requireAuth, (req: AuthedRequest, res) => {
+  res.json(buildNotifications(req.user!))
+})
+
 api.get('/notifications/read', requireAuth, (req: AuthedRequest, res) => {
   res.json(readUserValue(req.user!.id, 'notifRead', []))
 })
@@ -196,7 +219,7 @@ api.get('/careers', requireAuth, (_req, res) => {
 })
 
 api.get('/careers/matches', requireAuth, (req: AuthedRequest, res) => {
-  res.json(dashboardData(req.user!).careers)
+  res.json(allCareerMatches(req.user!))
 })
 
 api.get('/careers/:careerId', requireAuth, (req, res) => {
@@ -391,6 +414,16 @@ api.post('/resume/analyze', requireAuth, (req: AuthedRequest, res) => {
 })
 
 app.use('/api/v1', api)
+
+// Never let unmatched /api/* routes fall through to Vite SPA middleware (which would return <!doctype html>)
+app.use('/api', (req, res) => {
+  res.status(404).json({ detail: `API endpoint not found: ${req.method} ${req.originalUrl}` })
+})
+
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  const message = err instanceof Error ? err.message : 'Unexpected server error'
+  res.status(500).json({ detail: message })
+})
 
 async function start() {
   if (!IS_PROD) {

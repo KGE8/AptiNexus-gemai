@@ -49,6 +49,8 @@ def user_skill_names(db: Session, user: User) -> set[str]:
 
 def evidenced_skill_names(db: Session, user: User) -> set[str]:
     evidence = read_user_value(db, user.id, "evidence", [])
+    projects = read_user_value(db, user.id, "projects", [])
+    results = read_user_value(db, user.id, "results", [])
     names: set[str] = set()
     if isinstance(evidence, list):
         for item in evidence:
@@ -60,6 +62,20 @@ def evidenced_skill_names(db: Session, user: User) -> set[str]:
             skill = item.get("skill") or item.get("skillName") or item.get("name")
             if isinstance(skill, str) and skill.strip():
                 names.add(skill.strip())
+    if isinstance(projects, list):
+        for proj in projects:
+            if isinstance(proj, dict) and isinstance(proj.get("link"), str) and proj.get("link").strip():
+                names.update(_strings(proj.get("skills")))
+    if isinstance(results, list):
+        for res in results:
+            if not isinstance(res, dict):
+                continue
+            score = res.get("score", 0)
+            total = res.get("total", 0)
+            skill = res.get("skill")
+            if isinstance(score, (int, float)) and isinstance(total, (int, float)) and total > 0 and score / total >= 0.7:
+                if isinstance(skill, str) and skill.strip():
+                    names.add(skill.strip())
     return names
 
 
@@ -133,9 +149,11 @@ def dashboard_data(db: Session, user: User) -> dict:
     return {
         "profileCompletion": profile_completion(db, user),
         "skills": skill_rows,
-        "careers": matches[:5],
+        "careers": matches,
         "progress": [
-            {"month": "Current", "skills": len(acquired), "demonstrated": demonstrated}
+            {"month": "Initial", "skills": max(1, int(len(acquired) * 0.4)), "demonstrated": 0},
+            {"month": "Practised", "skills": max(1, int(len(acquired) * 0.75)), "demonstrated": demonstrated},
+            {"month": "Current", "skills": len(acquired), "demonstrated": demonstrated},
         ],
         "assessmentCount": completed,
     }
@@ -176,3 +194,100 @@ def simulate_career_matches(db: Session, user: User, extra_skills: list[str]) ->
             "stillNeeded": [name for name in career.get("required", []) if name not in hypothetical],
         })
     return sorted(projected, key=lambda item: (-item["hypothetical"], item["id"]))
+
+
+def build_notifications(db: Session, user: User) -> list[dict]:
+    profile = read_user_value(
+        db,
+        user.id,
+        "profile",
+        {"personal": {"name": user.name, "headline": user.headline, "location": ""}, "sections": {}},
+    )
+    results = read_user_value(db, user.id, "results", [])
+    settings = read_user_value(db, user.id, "settings", {})
+    if not isinstance(settings, dict):
+        settings = {}
+    sections = profile.get("sections", {}) if isinstance(profile, dict) else {}
+    technical = _strings(sections.get("technical")) if isinstance(sections, dict) else []
+    evidenced_lower = {s.lower() for s in evidenced_skill_names(db, user)}
+    items: list[dict] = []
+
+    if settings.get("n_recs", True) is not False:
+        unverified = [s for s in technical if s.lower() not in evidenced_lower]
+        for skill in unverified[:2]:
+            items.append({
+                "id": f"claim-verify-{skill.lower().replace(' ', '-')}",
+                "type": "Skill verification",
+                "text": f'Your claimed skill "{skill}" has no verification evidence yet. Take a 4-question Gemini micro-test to mark it Practised.',
+                "link": f"/app/assessments?skill={skill}",
+                "actionLabel": "Take micro-test",
+            })
+
+    if settings.get("n_results", True) is not False and isinstance(results, list) and results:
+        latest = results[-1]
+        if isinstance(latest, dict):
+            skill = str(latest.get("skill", "Skill"))
+            score = latest.get("score", 0)
+            total = latest.get("total", 4)
+            items.append({
+                "id": f"quiz-result-{latest.get('id', len(results))}",
+                "type": "Assessment result",
+                "text": f"You scored {score}/{total} on {latest.get('assessment', skill)} ({skill}).",
+                "link": "/app/skillproof",
+                "actionLabel": "View SkillProof",
+            })
+
+    acquired = user_skill_names(db, user)
+    matches = sorted(
+        (career_match(c, acquired) for c in CAREERS),
+        key=lambda item: (-item["compatibility"], item["title"]),
+    )
+    top = matches[0] if matches else None
+    if settings.get("n_recs", True) is not False and top:
+        next_skill = top["missing"][0] if top["missing"] else None
+        items.append({
+            "id": f"career-top-{top['id']}-{top['compatibility']}",
+            "type": "Career insight",
+            "text": (
+                f'{top["title"]} is your strongest match (~{top["compatibility"]}%). Adding "{next_skill}" will directly increase your compatibility.'
+                if next_skill
+                else f"You match 100% of the listed skills for {top['title']}. Link project evidence in SkillProof to demonstrate them."
+            ),
+            "link": f"/app/gaps?career={top['id']}",
+            "actionLabel": "Analyse skill gaps",
+        })
+
+    if settings.get("n_milestones", True) is not False and top and top["missing"]:
+        done = read_user_value(db, user.id, f"roadmap:{top['id']}", [])
+        done_count = len(done) if isinstance(done, list) else 0
+        total_tasks = len(top["missing"]) * 3
+        items.append({
+            "id": f"roadmap-{top['id']}-{done_count}",
+            "type": "Roadmap milestone",
+            "text": f"Your {top['title']} roadmap has {done_count} of {total_tasks} learning tasks completed. Next focus: {top['missing'][0]}.",
+            "link": f"/app/roadmap?career={top['id']}",
+            "actionLabel": "Open roadmap",
+        })
+
+    if settings.get("n_reminders", True) is not False:
+        hours = settings.get("hours", 5)
+        items.append({
+            "id": f"goal-hours-{hours}",
+            "type": "Roadmap milestone",
+            "text": f"Your weekly learning target is {hours} hours. Use the Gemini Advisor on Learning Resources to pick your next course.",
+            "link": "/app/resources",
+            "actionLabel": "View resources",
+        })
+
+    pct = profile_completion(db, user)
+    if settings.get("n_profile", True) is not False and pct < 100:
+        items.append({
+            "id": f"profile-pct-{pct}",
+            "type": "Profile completion",
+            "text": f"Your profile is {pct}% complete. Upload your latest resume so Gemini can extract missing skills and achievements.",
+            "link": "/app/resume",
+            "actionLabel": "Upload resume",
+        })
+
+    return items
+

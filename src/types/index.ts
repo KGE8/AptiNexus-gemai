@@ -1,9 +1,17 @@
 export type SkillStatus = 'Claimed' | 'Practised' | 'Demonstrated' | 'Verified'
 export interface User { id: string; name: string; email: string; headline: string }
 export interface Skill { id: string; name: string; category: string; level: number; status: SkillStatus }
-export interface CareerMatch { id: string; title: string; category: string; compatibility: number; missing: string[] }
+export interface CareerMatch { id: string; title: string; category: string; compatibility: number; missing: string[]; matched?: string[]; requiredCount?: number; matchedCount?: number }
 export interface ProgressPoint { month: string; skills: number; demonstrated: number }
-export interface DashboardData { profileCompletion: number; skills: Skill[]; careers: CareerMatch[]; progress: ProgressPoint[] }
+export interface DashboardData { profileCompletion: number; skills: Skill[]; careers: CareerMatch[]; progress: ProgressPoint[]; assessmentCount?: number }
+
+export interface NotificationItem {
+  id: string
+  type: 'Skill verification' | 'Roadmap milestone' | 'Profile completion' | 'Assessment result' | 'Career insight'
+  text: string
+  link?: string
+  actionLabel?: string
+}
 
 export interface CareerSuggestion {
   careerId: string

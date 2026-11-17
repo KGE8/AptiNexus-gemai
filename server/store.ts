@@ -215,29 +215,65 @@ export function careerMatch(career: CareerItem, acquired: Set<string>) {
   }
 }
 
+export function allCareerMatches(user: UserRecord) {
+  const acquired = userSkillNames(user)
+  return CAREERS.map(c => careerMatch(c, acquired)).sort(
+    (a, b) => b.compatibility - a.compatibility || a.title.localeCompare(b.title),
+  )
+}
+
 export function dashboardData(user: UserRecord) {
+  const { projects, evidence, results } = getFullUserSnapshot(user)
   const acquired = userSkillNames(user)
   const acquiredLower = new Set(Array.from(acquired).map(s => s.toLowerCase()))
   const evidenced = evidencedSkillNames(user)
   const evidencedLower = new Set(Array.from(evidenced).map(s => s.toLowerCase()))
+
+  const practisedLower = new Set<string>()
+  for (const e of evidence) {
+    const sk = (e.skill || e.skillName || e.name) as string | undefined
+    if (typeof sk === 'string' && sk.trim()) practisedLower.add(sk.trim().toLowerCase())
+  }
+  for (const p of projects) {
+    for (const sk of cleanStrings(p.skills)) practisedLower.add(sk.toLowerCase())
+  }
+  for (const r of results) {
+    const score = Number(r.score ?? 0)
+    const total = Number(r.total ?? 0)
+    if (total > 0 && score / total >= 0.7 && typeof r.skill === 'string') {
+      practisedLower.add(r.skill.trim().toLowerCase())
+    }
+  }
+
   const skillRows = SKILLS.filter(s => acquiredLower.has(s.name.toLowerCase())).map(s => {
-    const status = evidencedLower.has(s.name.toLowerCase()) ? 'Demonstrated' : 'Claimed'
+    const key = s.name.toLowerCase()
+    const status = evidencedLower.has(key)
+      ? 'Demonstrated'
+      : practisedLower.has(key)
+        ? 'Practised'
+        : 'Claimed'
     return {
       id: s.name.toLowerCase().replace(/\s+/g, '-'),
       name: s.name,
       category: s.category,
-      level: status === 'Demonstrated' ? 100 : 65,
+      level: status === 'Demonstrated' ? 95 : status === 'Practised' ? 75 : 45,
       status,
     }
   })
-  const matches = CAREERS.map(c => careerMatch(c, acquired)).sort((a, b) => b.compatibility - a.compatibility || a.title.localeCompare(b.title))
-  const results = readUserValue<unknown[]>(user.id, 'results', [])
+
+  const matches = allCareerMatches(user)
   const demonstrated = skillRows.filter(s => s.status === 'Demonstrated').length
+  const practisedCount = skillRows.filter(s => s.status === 'Practised' || s.status === 'Demonstrated').length
+  const totalSkills = acquired.size
   return {
     profileCompletion: profileCompletion(user),
     skills: skillRows,
-    careers: matches.slice(0, 5),
-    progress: [{ month: 'Current', skills: acquired.size, demonstrated }],
+    careers: matches,
+    progress: [
+      { month: 'Initial', skills: Math.max(1, Math.floor(totalSkills * 0.4)), demonstrated: 0 },
+      { month: 'Practised', skills: Math.max(1, Math.floor(totalSkills * 0.75)), demonstrated: Math.min(demonstrated, practisedCount) },
+      { month: 'Current', skills: totalSkills, demonstrated },
+    ],
     assessmentCount: Array.isArray(results) ? results.length : 0,
   }
 }
@@ -335,3 +371,109 @@ export function buildSkillGraph(user: UserRecord) {
 
   return { nodes, edges }
 }
+
+export interface LiveNotification {
+  id: string
+  type: 'Skill verification' | 'Roadmap milestone' | 'Profile completion' | 'Assessment result' | 'Career insight'
+  text: string
+  link?: string
+  actionLabel?: string
+}
+
+export function buildNotifications(user: UserRecord): LiveNotification[] {
+  const { profile, results, settings } = getFullUserSnapshot(user)
+  const evidenced = new Set(Array.from(evidencedSkillNames(user)).map(s => s.toLowerCase()))
+  const technical = cleanStrings(profile.sections?.technical)
+  const items: LiveNotification[] = []
+
+  const allowRecs = settings.n_recs !== false
+  const allowResults = settings.n_results !== false
+  const allowMilestones = settings.n_milestones !== false
+  const allowProfile = settings.n_profile !== false
+  const allowReminders = settings.n_reminders !== false
+
+  // 1. Unverified claimed skills ready for a Gemini micro-test
+  if (allowRecs) {
+    const unverified = technical.filter(s => !evidenced.has(s.toLowerCase()))
+    for (const skill of unverified.slice(0, 2)) {
+      items.push({
+        id: `claim-verify-${skill.toLowerCase().replace(/\s+/g, '-')}`,
+        type: 'Skill verification',
+        text: `Your claimed skill "${skill}" has no verification evidence yet. Take a 4-question Gemini micro-test to mark it Practised.`,
+        link: `/app/assessments?skill=${encodeURIComponent(skill)}`,
+        actionLabel: 'Take micro-test',
+      })
+    }
+  }
+
+  // 2. Latest assessment results
+  if (allowResults && results.length > 0) {
+    const latest = results[results.length - 1]
+    const skill = String(latest.skill ?? 'Skill')
+    const score = Number(latest.score ?? 0)
+    const total = Number(latest.total ?? 4)
+    items.push({
+      id: `quiz-result-${String(latest.id ?? results.length)}`,
+      type: 'Assessment result',
+      text: `You scored ${score}/${total} on ${String(latest.assessment ?? skill)} (${skill}).`,
+      link: '/app/skillproof',
+      actionLabel: 'View SkillProof',
+    })
+  }
+
+  // 3. Top career match & bridge skill insight
+  const matches = allCareerMatches(user)
+  const top = matches[0]
+  if (allowRecs && top) {
+    const nextSkill = top.missing[0]
+    items.push({
+      id: `career-top-${top.id}-${top.compatibility}`,
+      type: 'Career insight',
+      text: nextSkill
+        ? `${top.title} is your strongest match (~${top.compatibility}%). Adding "${nextSkill}" will directly increase your compatibility.`
+        : `You match 100% of the listed skills for ${top.title}. Link project evidence in SkillProof to demonstrate them.`,
+      link: `/app/gaps?career=${top.id}`,
+      actionLabel: 'Analyse skill gaps',
+    })
+  }
+
+  // 4. Active roadmap milestone
+  if (allowMilestones && top && top.missing.length > 0) {
+    const done = readUserValue<string[]>(user.id, `roadmap:${top.id}`, [])
+    const totalTasks = top.missing.length * 3
+    items.push({
+      id: `roadmap-${top.id}-${done.length}`,
+      type: 'Roadmap milestone',
+      text: `Your ${top.title} roadmap has ${done.length} of ${totalTasks} learning tasks completed. Next focus: ${top.missing[0]}.`,
+      link: `/app/roadmap?career=${top.id}`,
+      actionLabel: 'Open roadmap',
+    })
+  }
+
+  // 5. Weekly learning goal reminder from user settings
+  if (allowReminders) {
+    const hours = Number(settings.hours ?? 5)
+    items.push({
+      id: `goal-hours-${hours}`,
+      type: 'Roadmap milestone',
+      text: `Your weekly learning target is ${hours} hours. Use the Gemini Advisor on Learning Resources to pick your next course.`,
+      link: '/app/resources',
+      actionLabel: 'View resources',
+    })
+  }
+
+  // 6. Profile completion gaps
+  const pct = profileCompletion(user)
+  if (allowProfile && pct < 100) {
+    items.push({
+      id: `profile-pct-${pct}`,
+      type: 'Profile completion',
+      text: `Your profile is ${pct}% complete. Upload your latest resume so Gemini can extract missing skills and achievements.`,
+      link: '/app/resume',
+      actionLabel: 'Upload resume',
+    })
+  }
+
+  return items
+}
+

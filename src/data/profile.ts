@@ -7,9 +7,9 @@ export const sectionDefs = [
   { id: 'projects', title: 'Projects', ph: 'e.g. Line-following rover' }, { id: 'certifications', title: 'Certifications', ph: 'e.g. Python course certificate' },
   { id: 'achievements', title: 'Achievements', ph: 'e.g. Won college robotics contest' }, { id: 'goals', title: 'Career goals', ph: 'e.g. Work in robotics' },
 ]
-export const loadProfile = (u: User): ProfileData => {
-  try { const raw = localStorage.getItem(`aptinexus.profile.${u.id}`); if (raw) return JSON.parse(raw) } catch { /* fall through to defaults */ }
-  return { personal: { name: u.name, headline: u.headline, location: '' }, sections: { education: ['B.E. Mechanical Engineering (in progress)'], technical: ['Python', 'CAD Design', 'Embedded C'], interests: ['Robotics'], projects: ['Line-following rover'] } }
+export const loadProfile = (u?: User | null): ProfileData => {
+  try { if (u?.id) { const raw = localStorage.getItem(`aptinexus.profile.${u.id}`); if (raw) return JSON.parse(raw) } } catch { /* fall through to defaults */ }
+  return { personal: { name: u?.name ?? '', headline: u?.headline ?? '', location: '' }, sections: { education: ['B.E. Mechanical Engineering (in progress)'], technical: ['Python', 'CAD Design', 'Embedded C'], interests: ['Robotics'], projects: ['Line-following rover'] } }
 }
 export const saveProfile = (u: User, p: ProfileData) => localStorage.setItem(`aptinexus.profile.${u.id}`, JSON.stringify(p))
 export const completion = (p: ProfileData) => {

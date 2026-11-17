@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { ChevronDown } from 'lucide-react'
 import CareerPicker from '../../components/careers/CareerPicker'
 import { careers } from '../../data/careers'
-import { byName, priorityOf, statusOf } from '../../data/skills'
+import { byName, priorityOf } from '../../data/skills'
 import { gapsApi } from '../../services/api'
 import { useRemote } from '../../hooks/useRemote'
 import { useAuth } from '../../contexts/AuthContext'
@@ -16,13 +16,20 @@ export default function RoadmapPage() {
   const [done, setDone] = useRemote<string[]>(`roadmap:${career.id}`, user?.id, [])
   const [open, setOpen] = useState<string | null>(null)
   const [missing, setMissing] = useState<string[]>([])
+  const [strengths, setStrengths] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   useEffect(() => {
     let active = true
     setLoading(true); setError('')
-    gapsApi.analyse(career.id).then(result => { if (active) setMissing((result as { missing: string[] }).missing ?? []) })
+    gapsApi.analyse(career.id).then(result => {
+      if (active) {
+        const res = result as { missing: string[]; strengths: string[] }
+        setMissing(res.missing ?? [])
+        setStrengths(res.strengths ?? [])
+      }
+    })
       .catch(e => { if (active) setError(e instanceof Error ? e.message : 'Could not load your roadmap.') })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
@@ -30,9 +37,14 @@ export default function RoadmapPage() {
   const toggle = (id: string) => { const n = done.includes(id) ? done.filter(d => d !== id) : [...done, id]; setDone(n) }
 
   // Order: by priority, with any missing prerequisite placed before the skill that needs it.
+  const ownedSet = new Set(strengths.map(s => s.toLowerCase()))
   const stages: string[] = []
-  const place = (s: string) => { if (stages.includes(s)) return; (byName(s)?.prereqs ?? []).filter(p => statusOf(p) === 'Not started').forEach(place); stages.push(s) }
-  missing.sort((a, b) => career.required.indexOf(a) - career.required.indexOf(b)).forEach(place)
+  const place = (s: string) => {
+    if (stages.includes(s)) return
+    ;(byName(s)?.prereqs ?? []).filter(p => !ownedSet.has(p.toLowerCase())).forEach(place)
+    stages.push(s)
+  }
+  ;[...missing].sort((a, b) => career.required.indexOf(a) - career.required.indexOf(b)).forEach(place)
   const all = stages.flatMap(s => tasks(s).map((_, i) => `${s}:${i}`))
   const pct = all.length ? Math.round((all.filter(t => done.includes(t)).length / all.length) * 100) : 100
   const next = stages.find(s => tasks(s).some((_, i) => !done.includes(`${s}:${i}`)))

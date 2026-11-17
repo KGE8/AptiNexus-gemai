@@ -1,29 +1,103 @@
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { careerDetail, careerMeta, careers, estimate, userSkills } from '../../data/careers'
-import { resources } from '../../data/resources'
-import { analyse } from '../../data/skills'
+import AiAdvisorPanel from '../../components/ai/AiAdvisorPanel'
+import { careerDetail, careerMeta, careers as fallbackCareers, type Career } from '../../data/careers'
+import { resources as fallbackResources, type Resource } from '../../data/resources'
+import { careersApi, gapsApi, resourcesApi } from '../../services/api'
 
-const List = ({ title, items }: { title: string; items: string[] }) => <section className="glass p-5"><h2 className="mb-2 font-medium text-[#1d1d1f]">{title}</h2><ul className="list-inside list-disc space-y-1 text-sm">{items.map(i => <li key={i}>{i}</li>)}</ul></section>
+const List = ({ title, items }: { title: string; items: string[] }) => (
+  <section className="glass p-5">
+    <h2 className="mb-2 font-medium text-[#1d1d1f]">{title}</h2>
+    <ul className="list-inside list-disc space-y-1 text-sm">
+      {items.map(i => (
+        <li key={i}>{i}</li>
+      ))}
+    </ul>
+  </section>
+)
+
 export default function CareerDetailPage() {
-  const c = careers.find(x => x.id === useParams().id)
-  if (!c) return <div className="glass mx-auto max-w-lg p-6">That career wasn’t found. <Link className="text-[#007AFF]" to="/app/explore">Browse all careers</Link></div>
-  const d = careerDetail[c.id], m = careerMeta[c.id], { optional } = analyse(c)
-  const res = resources.filter(r => c.required.includes(r.skill)).slice(0, 4)
+  const { id } = useParams()
+  const [career, setCareer] = useState<Career | null>(() => fallbackCareers.find(x => x.id === id) ?? null)
+  const [strengths, setStrengths] = useState<string[]>([])
+  const [optional, setOptional] = useState<string[]>([])
+  const [resources, setResources] = useState<Resource[]>(fallbackResources)
+  const [loading, setLoading] = useState(true)
+
+  const loadCareerDetail = useCallback(() => {
+    if (!id) return
+    setLoading(true)
+    Promise.all([careersApi.get(id), gapsApi.analyse(id), resourcesApi.list()])
+      .then(([c, gaps, resList]) => {
+        if (c) setCareer(c)
+        if (gaps) {
+          setStrengths(gaps.strengths ?? [])
+          setOptional(gaps.optional ?? [])
+        }
+        if (Array.isArray(resList)) setResources(resList)
+      })
+      .catch(() => {
+        // Fallback catalog metadata already initialized
+      })
+      .finally(() => setLoading(false))
+  }, [id])
+
+  useEffect(() => {
+    loadCareerDetail()
+  }, [loadCareerDetail])
+
+  if (!career) {
+    return (
+      <div className="glass mx-auto max-w-lg p-6">
+        That career wasn’t found.{' '}
+        <Link className="text-[#007AFF]" to="/app/explore">
+          Browse all careers
+        </Link>
+      </div>
+    )
+  }
+
+  const d = careerDetail[career.id]
+  const m = careerMeta[career.id]
+  const strengthSet = new Set(strengths.map(s => s.toLowerCase()))
+  const compatibility = career.required.length
+    ? Math.round((100 * career.required.filter(s => strengthSet.has(s.toLowerCase())).length) / career.required.length)
+    : 0
+  const res = resources.filter(r => career.required.includes(r.skill)).slice(0, 4)
+
   return (
-    <div className="mx-auto max-w-4xl space-y-4">
-      <div><p className="text-sm text-[#6e6e73]">{c.category} · estimated compatibility ~{estimate(c)}%</p><h1 className="text-2xl font-semibold text-[#1d1d1f]">{c.title}</h1><p className="mt-2">{d.overview}</p>
-        <div className="mt-3 flex gap-2"><Link className="btn-primary" to={`/app/gaps?career=${c.id}`}>Analyse my skill gaps</Link><Link className="btn-ghost" to={`/app/roadmap?career=${c.id}`}>Open roadmap</Link></div></div>
+    <div className="mx-auto max-w-4xl space-y-5">
+      <div>
+        <p className="tabular-nums text-sm text-[#6e6e73]">
+          {career.category} · profile compatibility ~{compatibility}%{loading ? ' (updating…)' : ''}
+        </p>
+        <h1 className="text-2xl font-semibold text-[#1d1d1f]">{career.title}</h1>
+        <p className="mt-2">{d?.overview ?? career.why}</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Link className="btn-primary" to={`/app/gaps?career=${career.id}`}>
+            Analyse my skill gaps
+          </Link>
+          <Link className="btn-ghost" to={`/app/roadmap?career=${career.id}`}>
+            Open roadmap
+          </Link>
+        </div>
+      </div>
+
+      <AiAdvisorPanel focus="courses" focusCareerId={career.id} onApplied={loadCareerDetail} />
+
       <div className="grid gap-4 md:grid-cols-2">
-        <List title="Typical responsibilities" items={d.resp} />
-        <List title="Required skills" items={c.required.map(s => `${s} ${userSkills.includes(s) ? '(you have this)' : '(missing)'}`)} />
-        <List title="Recommended skills" items={optional.length ? optional : ['No extra recommendations in the sample data']} />
-        <List title="Education" items={[m.education]} />
-        <List title="Career progression" items={d.prog} />
-        <List title="Example projects" items={d.projects} />
-        <List title="Related careers" items={m.related} />
+        {d && <List title="Typical responsibilities" items={d.resp} />}
+        <List
+          title="Required skills"
+          items={career.required.map(s => `${s} ${strengthSet.has(s.toLowerCase()) ? '(in your profile)' : '(missing)'}`)}
+        />
+        <List title="Recommended adjacent skills" items={optional.length ? optional : ['All related catalog skills are already in your profile']} />
+        {m && <List title="Education" items={[m.education]} />}
+        {d && <List title="Career progression" items={d.prog} />}
+        {d && <List title="Example projects" items={d.projects} />}
+        {m && <List title="Related careers" items={m.related} />}
         <List title="Learning resources" items={res.map(r => `${r.title} (${r.type})`)} />
       </div>
-      <p className="text-xs text-[#6e6e73]">Sample content for the demo. Scores are estimates, not employment predictions.</p>
     </div>
   )
 }
